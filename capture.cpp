@@ -11,19 +11,89 @@
 #include <linux/v4l2-common.h>
 #include <linux/v4l2-controls.h>
 #include <linux/videodev2.h>
+#include <GL/freeglut.h>          //opengl rendering
+#include <GL/gl.h>                //opengl rendering
+
+//To Compile:
+//   g++ capture.cpp -lglut -lGL -lGLEW -lGLU -o demo
 
 typedef struct {
     void *start;
     size_t length;
 } Buffer;
 
-int main(){
-  int fd;
-  struct v4l2_requestbuffers reqbuf;
-  struct v4l2_buffer buffer;
-  Buffer *buffers;
+int fd;
+struct v4l2_requestbuffers reqbuf;
+struct v4l2_buffer buffer;
+Buffer *buffers;
+__u32 width;
+__u32 height;
+__u32 num_pixels;
+__u8 *out_buff;
+__u32 out_buff_len;
+
+inline __u8 clip(__u32 a){
+  return a > 255 ? 255 : a;
+}
+
+void convertYUYVtoRGB(__u8 *ptrIn, __u8 *ptrOut, __u32 num_pixels){
+  for (int i = 0;  i < num_pixels/2;  ++i)
+  {
+      int y0 = ptrIn[0];
+      int u0 = ptrIn[1];
+      int y1 = ptrIn[2];
+      int v0 = ptrIn[3];
+      ptrIn += 4;
+      int c = y0 - 16;
+      int d = u0 - 128;
+      int e = v0 - 128;
+      ptrOut[0] = clip(( 298 * c + 516 * d + 128) >> 8);// blue
+      ptrOut[1] = clip(( 298 * c - 100 * d - 208 * e + 128) >> 8); // green
+      ptrOut[2] = clip(( 298 * c + 409 * e + 128) >> 8); // red
+      c = y1 - 16;
+      ptrOut[3] = clip(( 298 * c + 516 * d + 128) >> 8); // blue
+      ptrOut[4] = clip(( 298 * c - 100 * d - 208 * e + 128) >> 8); // green
+      ptrOut[5] = clip(( 298 * c + 409 * e + 128) >> 8); // red
+      ptrOut += 6;
+  }
+}
+
+void render(){
+  //Run the capture loop
+  while(true){
+    //Initate a deque (and wait for a buffer to be available for deque)
+    __u32 index;
+    memset(&buffer, 0, sizeof(buffer));
+    buffer.type = reqbuf.type;
+    buffer.memory = V4L2_MEMORY_MMAP;
+    if (-1 == ioctl (fd, VIDIOC_DQBUF, &buffer)) {
+        perror("VIDIOC_DQBUF");
+        exit(EXIT_FAILURE);
+    }
+    index = buffer.index; //keep track of which buffer deques
+
+    //Convert the YUYV frame to RBB
+    convertYUYVtoRGB((__u8*)buffers[index].start, out_buff, num_pixels);
+
+    //Render with opengl
+    glClearColor(0.0, 0.0, 0.0, 0.0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawPixels(width , height, GL_BGR, GL_UNSIGNED_BYTE, out_buff );
+    glutSwapBuffers();
+
+    //After using the buffer, enque it to make it avialble to the driver again
+    memset(&buffer, 0, sizeof(buffer));
+    buffer.type = reqbuf.type;
+    buffer.memory = V4L2_MEMORY_MMAP;
+    buffer.index = index;
+    if (-1 == ioctl (fd, VIDIOC_QBUF, &buffer)) {
+        perror("VIDIOC_QBUF");
+        exit(EXIT_FAILURE);
+    }
+  }
+}
+int main(int argc, char* argv[]){
   unsigned int i;
-  bool capture = true;
 
   //Open the camera device node
   fd = open("/dev/video0",O_RDWR);
@@ -38,7 +108,7 @@ int main(){
     perror("Error: reading V4L2 capabilities failed.");
     exit(EXIT_FAILURE);
   }
-  printf("Device capabilities: %x",capabilities.device_caps);
+  printf("Device capabilities: %x\n",capabilities.device_caps);
   //Device capabilities = 0x04200001:
   // 0x00000001 - V4L2_CAP_VIDEO_CAPTURE:  Device supports the single planar AP through the video capture interface.
   // 0x00200000 - V4L2_CAP_EXT_PIX_FORMAT:  The device supports the struct v4l2_pix_format extended fields
@@ -50,10 +120,22 @@ int main(){
   memset(&format, 0, sizeof(format));
   format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   if (-1 == ioctl (fd, VIDIOC_G_FMT, &format)){
-    perror("Error: failed to read the image format.");
+    perror("Error: failed to read default image format.");
     exit(EXIT_FAILURE);
   }
-
+  width = format.fmt.pix.width;
+  height = format.fmt.pix.height;
+  num_pixels = width * height;
+  printf("Code %d\n",format.fmt.pix.pixelformat);
+  printf("Camera Width (Pixels): %d\n", width);
+  printf("Camera Height (Pixels): %d\n", height);
+  union {
+    char str[5];
+    __u32 code;
+  }pixFormat;
+  pixFormat.code = format.fmt.pix.pixelformat;
+  pixFormat.str[4] = 0;
+  printf("Camera Format: %s\n",pixFormat.str);
 
   memset(&reqbuf, 0, sizeof(reqbuf));
   reqbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -90,6 +172,7 @@ int main(){
       }
 
       buffers[i].length = buffer.length; /* remember for munmap() */
+      printf("Buffer length: %d\n",buffer.length);
 
       buffers[i].start = mmap(NULL, buffer.length,
           PROT_READ | PROT_WRITE, /* recommended */
@@ -98,9 +181,7 @@ int main(){
       if (MAP_FAILED == buffers[i].start) {
           /* If you do not exit here you should unmap() and free()
              the buffers mapped so far. */
-          printf("Hi");
           perror("mmap");
-          printf("Hello");
           exit(EXIT_FAILURE);
       }
   }
@@ -123,32 +204,24 @@ int main(){
     exit(EXIT_FAILURE);
   }
 
-  //Run the capture loop
-  while(capture){
-    //Initate a deque (and wait for a buffer to be available for deque)
-    __u32 index;
-    memset(&buffer, 0, sizeof(buffer));
-    buffer.type = reqbuf.type;
-    buffer.memory = V4L2_MEMORY_MMAP;
-    if (-1 == ioctl (fd, VIDIOC_DQBUF, &buffer)) {
-        perror("VIDIOC_DQBUF");
-        exit(EXIT_FAILURE);
-    }
-    index = buffer.index; //keep track of which buffer deques
-
-
-    printf("Buffer captured - Index: %d\n",index);
-
-    //After using the buffer, enque it to make it avialble to the driver again
-    memset(&buffer, 0, sizeof(buffer));
-    buffer.type = reqbuf.type;
-    buffer.memory = V4L2_MEMORY_MMAP;
-    buffer.index = index;
-    if (-1 == ioctl (fd, VIDIOC_QBUF, &buffer)) {
-        perror("VIDIOC_QBUF");
-        exit(EXIT_FAILURE);
-    }
+  //Allocate buffer used for output conversion to RGB
+  out_buff_len = width * height * 3;
+  out_buff = new (std::nothrow) __u8[out_buff_len];
+  if (NULL == out_buff){
+    perror("Unable to allocate output buffer.");
+    exit(EXIT_FAILURE);
   }
+
+  glutInit(&argc, argv);
+  glutInitDisplayMode(GLUT_DOUBLE);
+  glutInitWindowSize(640,480);
+  glutInitWindowPosition(100,100);
+  glutCreateWindow("OpenGL - First window demo");
+  glutDisplayFunc(render);
+  glutMainLoop();
+
+  //TODO: move this cleanup to a sigint handler so that it gets callled
+  //at program close.
 
   //Stop capture
   if (-1 == ioctl (fd, VIDIOC_STREAMOFF, &(reqbuf.type))){
