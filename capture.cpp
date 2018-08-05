@@ -82,7 +82,7 @@ void render(){
     //Render with opengl
     glClearColor(0.0, 0.0, 0.0, 0.0);
     glClear(GL_COLOR_BUFFER_BIT);
-    //TODO: Invert pixel drawing so the image isn't upside down!
+    //Todo: Invert pixel drawing so the image isn't upside down!
     glDrawPixels(width , height, GL_BGR, GL_UNSIGNED_BYTE, out_buff );
     glutSwapBuffers();
 
@@ -137,9 +137,9 @@ int main(int argc, char* argv[]){
   }
   printf("Device capabilities: %x\n",capabilities.device_caps);
   //Device capabilities of toshiba laptop webcam = 0x04200001:
-  // 0x00000001 - V4L2_CAP_VIDEO_CAPTURE:  Device supports the single planar AP through the video capture interface.
-  // 0x00200000 - V4L2_CAP_EXT_PIX_FORMAT:  The device supports the struct v4l2_pix_format extended fields
-  // 0x04000000 - V4L2_CAP_STREAMING: Device supports the streaming I/O method.
+  // 0x00000001 - V4L2_CAP_VIDEO_CAPTURE
+  // 0x00200000 - V4L2_CAP_EXT_PIX_FORMAT
+  // 0x04000000 - V4L2_CAP_STREAMING
   if (0 == (capabilities.device_caps & 0x00000001)){
     perror("Error: camera device does not support V4L2_CAP_VIDEO_CAPTURE\n");
     goto exit_close;
